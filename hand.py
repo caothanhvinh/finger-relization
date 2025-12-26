@@ -20,7 +20,7 @@ def load_dataset(pkl_path):
 
 
 # ====== GỌI HÀM LOAD ======
-PKL_PATH = r'D:\ảnh.pkl'
+PKL_PATH = r'D:\GITHUB-NM\anh.pkl'
 
 X, y, labels = load_dataset(PKL_PATH)
 
