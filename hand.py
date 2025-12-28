@@ -2,58 +2,49 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import pickle
-# Load MLP model for digit classifier
-#mlp = pickle.load(open(r'D:\ảnh.pkl', 'rb'))
 
-#array_1 = np.array(list('ABCDEGHIKLMNOPQRSTUVXY'))  # array of letters
-#array_2 = np.array(range(24))
-def load_dataset(pkl_path):
-    # Load dữ liệu từ file pkl
-    with open(pkl_path, 'rb') as f:
-        X, y, labels = pickle.load(f)
-
-    # Ép kiểu & chuẩn hóa (tối ưu hiệu suất)
-    X = X.astype('float32') / 255.0
-    y = y.astype('int64')
-
-    return X, y, labels
-
-
-# ====== GỌI HÀM LOAD ======
+# ================= PATH =================
 PKL_PATH = r'D:\GITHUB-NM\anh.pkl'
+MODEL_PATH = r'D:\GITHUB-NM\model_sign_language.sav'
 
-X, y, labels = load_dataset(PKL_PATH)
+# ================= LOAD DATASET (LABELS) =================
+with open(PKL_PATH, 'rb') as f:
+    X, y, labels = pickle.load(f)
 
-# ====== KIỂM TRA ======
-print('✅ Load dữ liệu thành công')
-print('X shape:', X.shape)
-print('y shape:', y.shape)
-print('Labels:', labels)
+print(" Labels:", labels)
 
-# ====== TRUY CẬP MẪU ======
-i = 0
-print('Ảnh thứ 0 thuộc chữ:', labels[y[i]])
+# ================= LOAD MODEL =================
+with open(MODEL_PATH, 'rb') as f:
+    mlp = pickle.load(f)
 
-# Initialize MediaPipe components
+print(" Model loaded successfully!")
+
+# ================= MEDIAPIPE INIT =================
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
-hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2, min_detection_confidence=0.5)
 
-# Desired aspect ratio for the bounding box (height/width)
-DESIRED_ASPECT_RATIO = 1.0  # Example: 1:1 ratio for a square bounding box
-PADDING = 40 # Padding for the bounding box
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,
+    min_detection_confidence=0.6,
+    min_tracking_confidence=0.6
+)
 
-# Threshold for detecting hand stillness
-STILLNESS_THRESHOLD = 5  # Pixel movement threshold to consider hand as "not moving"
+PADDING = 40
+ASPECT_RATIO = 1.0
+STILLNESS_THRESHOLD = 5
 
-
-# Function to process each video frame and detect hands
+# ================= FUNCTIONS =================
 def process_frame(frame):
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return hands.process(rgb_frame)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return hands.process(rgb)
 
 
-# Function to calculate the bounding box from hand landmarks
+def is_right_hand(handedness):
+    # MediaPipe bị mirror → Left = tay phải người dùng
+    return handedness.classification[0].label == 'Left'
+
+
 def calculate_bounding_box(hand_landmarks, frame_shape):
     h, w, _ = frame_shape
     x_min, y_min = w, h
@@ -61,12 +52,9 @@ def calculate_bounding_box(hand_landmarks, frame_shape):
 
     for lm in hand_landmarks.landmark:
         x, y = int(lm.x * w), int(lm.y * h)
-        x_min = min(x, x_min)
-        y_min = min(y, y_min)
-        x_max = max(x, x_max)
-        y_max = max(y, y_max)
+        x_min, y_min = min(x, x_min), min(y, y_min)
+        x_max, y_max = max(x, x_max), max(y, y_max)
 
-    # Add padding to the bounding box
     x_min = max(0, x_min - PADDING)
     y_min = max(0, y_min - PADDING)
     x_max = min(w, x_max + PADDING)
@@ -75,128 +63,97 @@ def calculate_bounding_box(hand_landmarks, frame_shape):
     return x_min, y_min, x_max, y_max
 
 
-# Function to enforce a fixed aspect ratio for the bounding box
-def enforce_aspect_ratio(x_min, y_min, x_max, y_max, frame_shape, desired_aspect_ratio):
+def enforce_square(x_min, y_min, x_max, y_max, frame_shape):
     h, w, _ = frame_shape
-    box_width = x_max - x_min
-    box_height = y_max - y_min
-    current_aspect_ratio = box_height / box_width
+    bw = x_max - x_min
+    bh = y_max - y_min
 
-    if current_aspect_ratio < desired_aspect_ratio:
-        # Height is too small, adjust the height
-        new_height = int(box_width * desired_aspect_ratio)
-        y_center = (y_min + y_max) // 2
-        y_min = max(0, y_center - new_height // 2)
-        y_max = min(h, y_center + new_height // 2)
-    elif current_aspect_ratio > desired_aspect_ratio:
-        # Width is too small, adjust the width
-        new_width = int(box_height / desired_aspect_ratio)
-        x_center = (x_min + x_max) // 2
-        x_min = max(0, x_center - new_width // 2)
-        x_max = min(w, x_center + new_width // 2)
+    if bw > bh:
+        diff = bw - bh
+        y_min = max(0, y_min - diff // 2)
+        y_max = min(h, y_max + diff // 2)
+    else:
+        diff = bh - bw
+        x_min = max(0, x_min - diff // 2)
+        x_max = min(w, x_max + diff // 2)
 
     return x_min, y_min, x_max, y_max
 
 
-# Function to draw the bounding box and landmarks on the frame
-def draw_bounding_box_and_landmarks(frame, x_min, y_min, x_max, y_max, hand_landmarks):
-    # Draw the bounding box
-    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-
-    # Draw landmarks on the frame
-    mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-
-
-# Function to crop the hand region from the frame
-def crop_hand(frame, x_min, y_min, x_max, y_max):
-    return frame[y_min:y_max, x_min:x_max]
-
-
-# Function to check if the hand is the right hand
-def is_right_hand(handedness):
-    return handedness.classification[0].label == 'Left'  
-
-
-# Function to detect if the hand is moving
-def is_hand_moving(current_landmarks, previous_landmarks, threshold, frame_shape):
-    if previous_landmarks is None:
-        return True  # First frame, no previous landmarks to compare
+def is_hand_moving(current, previous, threshold, frame_shape):
+    if previous is None:
+        return True
 
     h, w, _ = frame_shape
-    total_movement = 0
-    num_landmarks = len(current_landmarks)
+    total = 0
 
-    for lm_current, lm_previous in zip(current_landmarks, previous_landmarks):
-        x_current, y_current = int(lm_current.x * w), int(lm_current.y * h)
-        x_previous, y_previous = int(lm_previous.x * w), int(lm_previous.y * h)
+    for c, p in zip(current, previous):
+        cx, cy = int(c.x * w), int(c.y * h)
+        px, py = int(p.x * w), int(p.y * h)
+        total += np.sqrt((cx - px)**2 + (cy - py)**2)
 
-        # Calculate the Euclidean distance between the corresponding landmarks
-        distance = np.sqrt((x_current - x_previous) ** 2 + (y_current - y_previous) ** 2)
-        total_movement += distance
-
-    # Average movement per landmark
-    average_movement = total_movement / num_landmarks
-
-    return average_movement > threshold  # Hand is moving if movement is greater than threshold
+    return (total / len(current)) > threshold
 
 
-# Main function to handle video capture and processing
+# ================= MAIN =================
 def main():
-    cap = cv2.VideoCapture('sign_language.mp4')
-    # if a camera was used, change the above line to cap = cv2.VideoCapture(0) 
-    previous_hand_landmarks = None  # To store the previous frame's hand landmarks
+    cap = cv2.VideoCapture(0)
+    prev_landmarks = None
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Process the frame to detect hands
         result = process_frame(frame)
 
         if result.multi_hand_landmarks and result.multi_handedness:
-            for hand_landmarks, handedness in zip(result.multi_hand_landmarks, result.multi_handedness):
-                # Detect only the right hand
-                if is_right_hand(handedness):
-                    # Check if the hand is moving
-                    if is_hand_moving(hand_landmarks.landmark, previous_hand_landmarks, STILLNESS_THRESHOLD, frame.shape):
-                        # Calculate the bounding box
-                        x_min, y_min, x_max, y_max = calculate_bounding_box(hand_landmarks, frame.shape)
+            for hand_lm, handedness in zip(result.multi_hand_landmarks,
+                                           result.multi_handedness):
 
-                        # Enforce fixed aspect ratio for the bounding box
-                        x_min, y_min, x_max, y_max = enforce_aspect_ratio(
-                            x_min, y_min, x_max, y_max, frame.shape, DESIRED_ASPECT_RATIO
-                        )
-                       
-                    else:
-                        # Calculate the bounding box
-                        x_min, y_min, x_max, y_max = calculate_bounding_box(hand_landmarks, frame.shape)
+                if not is_right_hand(handedness):
+                    continue
 
-                        # Enforce fixed aspect ratio for the bounding box
-                        x_min, y_min, x_max, y_max = enforce_aspect_ratio(
-                            x_min, y_min, x_max, y_max, frame.shape, DESIRED_ASPECT_RATIO
-                        )
-                        # Crop the hand region
-                        hand_crop = crop_hand(frame, x_min, y_min, x_max, y_max)
-                        # Show the cropped hand
-                        # cv2.imshow("Cropped Right Hand", hand_crop)
-                        hand_crop = cv2.resize(hand_crop,(28,28))
+                x_min, y_min, x_max, y_max = calculate_bounding_box(hand_lm, frame.shape)
+                x_min, y_min, x_max, y_max = enforce_square(
+                    x_min, y_min, x_max, y_max, frame.shape
+                )
+
+                color = (0, 0, 255)  # đỏ
+                predicted_char = ""
+
+                if not is_hand_moving(hand_lm.landmark, prev_landmarks,
+                                      STILLNESS_THRESHOLD, frame.shape):
+
+                    hand_crop = frame[y_min:y_max, x_min:x_max]
+
+                    if hand_crop.size > 0:
+                        hand_crop = cv2.resize(hand_crop, (28, 28))
                         hand_crop = cv2.cvtColor(hand_crop, cv2.COLOR_BGR2GRAY)
-                        hand_crop = hand_crop/255.0
-                        # Flatten
-                        hand_crop = hand_crop.reshape((1,-1))
-                        # predict
-                        y_predict = mlp.predict(hand_crop)[0]
-                        sign = array_1[np.where(array_2 == y_predict)[0][0]]
-                        cv2.putText(frame, sign,(x_max,y_min), cv2.FONT_HERSHEY_COMPLEX,1,(255,0,255),1)
+                        hand_crop = hand_crop.astype('float32') / 255.0
+                        hand_crop = hand_crop.reshape(1, -1)
 
-                    # Draw bounding box and landmarks on the original frame
-                    draw_bounding_box_and_landmarks(frame, x_min, y_min, x_max, y_max, hand_landmarks)
-                    # Update the previous landmarks for the next frame
-                    previous_hand_landmarks = hand_landmarks.landmark     
+                        y_pred = mlp.predict(hand_crop)[0]
+                        predicted_char = labels[y_pred]
+                        color = (0, 255, 0)  # xanh
 
-        # Display the frame
-        cv2.imshow("Hand Detection", frame)
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, 2)
+                mp_draw.draw_landmarks(frame, hand_lm, mp_hands.HAND_CONNECTIONS)
+
+                if predicted_char:
+                    cv2.putText(
+                        frame,
+                        predicted_char,
+                        (x_min, y_min - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.2,
+                        color,
+                        3
+                    )
+
+                prev_landmarks = hand_lm.landmark
+
+        cv2.imshow("Sign Language Recognition", frame)
 
         if cv2.waitKey(10) & 0xFF == ord('q'):
             break
@@ -207,7 +164,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-#CHAY DEADLINE DE
-#hehehehhehehehe
-#kakakkakaka
-#wbibwibibwbwiwivbiw
